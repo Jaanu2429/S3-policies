@@ -1,0 +1,99 @@
+#!/bin/bash
+
+# Prompt for user inputs
+read -p "Enter the main bucket name (default: my-secure-bucket): " MAIN_BUCKET
+MAIN_BUCKET=${MAIN_BUCKET:-my-secure-bucket}
+
+read -p "Enter the number of additional buckets to create (default: 10): " ADDITIONAL_BUCKET_COUNT
+ADDITIONAL_BUCKET_COUNT=${ADDITIONAL_BUCKET_COUNT:-10}
+
+# Configuration
+FOLDERS=("folder1" "folder2")
+USERS=("user1" "user2")
+SERVICES=("service1" "service2")
+AWS_REGION="us-east-1"
+AWS_ACCOUNT_ID=""  
+# Helper function to create a bucket
+create_bucket() {
+  bucket_name=$1
+  echo "Creating bucket: $bucket_name"
+  aws s3api create-bucket --bucket "$bucket_name" --region "$AWS_REGION" --create-bucket-configuration LocationConstraint="$AWS_REGION"
+}
+
+# Function to create IAM policy and attach to a role
+create_iam_policy_and_role() {
+  policy_name=$1
+  role_name=$2
+  bucket_name=$3
+  folder=$4
+  actions=$5
+
+  # Create IAM policy document
+  policy_document=$(cat <<EOF
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": $actions,
+      "Resource": "arn:aws:s3:::$bucket_name/$folder/*"
+    }
+  ]
+}
+EOF
+)
+
+  # Create IAM policy if it doesn't exist
+  echo "Creating policy: $policy_name"
+  aws iam create-policy --policy-name "$policy_name" --policy-document "$policy_document" || echo "Policy $policy_name already exists."
+
+  # Create IAM role with trust policy
+  trust_policy=$(cat <<EOF
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Principal": {"Service": "ec2.amazonaws.com"},
+      "Action": "sts:AssumeRole"
+    }
+  ]
+}
+EOF
+)
+
+  echo "Creating role: $role_name"
+  aws iam create-role --role-name "$role_name" --assume-role-policy-document "$trust_policy" || echo "Role $role_name already exists."
+  echo "Attaching policy: $policy_name to role: $role_name"
+  aws iam attach-role-policy --role-name "$role_name" --policy-arn "arn:aws:iam::$AWS_ACCOUNT_ID:policy/$policy_name"
+}
+
+# Main script execution
+main() {
+  # Step 1: Create main bucket and additional buckets
+  for ((i = 1; i <= ADDITIONAL_BUCKET_COUNT; i++)); do
+    bucket_name="${MAIN_BUCKET}-${i}"
+    create_bucket "$bucket_name"
+
+    # Step 2: Create policies and roles for each folder, user, and service
+    for folder in "${FOLDERS[@]}"; do
+      for user in "${USERS[@]}"; do
+        policy_name="${user}-access-${folder}-policy"
+        role_name="${user}-access-${folder}-role"
+        actions='["s3:GetObject", "s3:PutObject"]'
+        create_iam_policy_and_role "$policy_name" "$role_name" "$bucket_name" "$folder" "$actions"
+      done
+
+      for service in "${SERVICES[@]}"; do
+        policy_name="${service}-access-${folder}-policy"
+        role_name="${service}-role"
+        actions='["s3:GetObject", "s3:PutObject"]'
+        create_iam_policy_and_role "$policy_name" "$role_name" "$bucket_name" "$folder" "$actions"
+      done
+    done
+  done
+  echo "Buckets, IAM policies, and roles created successfully."
+}
+
+# Run the main function
+main
